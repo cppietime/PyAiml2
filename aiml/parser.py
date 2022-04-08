@@ -14,6 +14,7 @@ from typing import (
 )
 from io import IOBase
 import re
+import logging
 
 from .pattern import (
     PatternTree,
@@ -23,16 +24,24 @@ from .pattern import (
 )
 from .translatable import *
 from .translatable import _stringops
-from .brain import Brain
+from .config import FilesConfig
+
 
 class AimlParser:
     """A parser to convert AIML XML data into a full pattern tree"""
     topic_pattern: Optional[List[PatternToken]] = None
     
     def parse(self, source: Union[IOBase, str]) -> PatternTree:
-        return self.parse_aiml(ET.parse(source))
+        # return self.parse_aiml(ET.parse(source))
+        if isinstance(source, IOBase):
+            src: str = source.read()
+        else:
+            with open(source) as file:
+                src = file.read()
+        return self.parse_string(src)
     
     def parse_string(self, source: str) -> PatternTree:
+        """Parse a provided string"""
         preproc: str = re.sub('[\r\n\t]+', '', source)
         preproc = re.sub('\\s+', ' ', preproc)
         source\
@@ -40,11 +49,11 @@ class AimlParser:
             .replace('\\n', '\n')\
             .replace('\t', '')\
             .replace('\\t', '\t')
-        print(preproc)
         root: ET.Element = ET.fromstring(preproc)
         return self.parse_aiml(root)
     
     def parse_aiml(self, elem: ET.Element) -> PatternTree:
+        """Parse the root <aiml>"""
         root: PatternTree = PatternTree()
         for child in elem:
             if child.tag.lower() == 'category':
@@ -59,7 +68,7 @@ class AimlParser:
         """Parses all categories in a topic into a single PatternTree for that topic"""
         if 'name' not in elem.attrib:
             raise ValueError('Top-level <topic> tag with no name attribute')
-        self.topic_pattern = Brain.literal_to_pattern(elem.get('name'))
+        self.topic_pattern = AimlParser.literal_to_pattern(elem.get('name'))
         root: PatternTree = PatternTree()
         for child in elem:
             if child.tag.lower() != 'category':
@@ -70,6 +79,7 @@ class AimlParser:
         return root
     
     def parse_category(self, elem: ET.Element) -> PatternTree:
+        """Parse a <category>, either in <aiml> or <topic>"""
         pattern: Optional[Tuple[PatternTree, PatternTree]] = None
         that: Optional[Tuple[PatternTree, PatternTree]] = None
         topic: Optional[Tuple[PatternTree, PatternTree]] = None
@@ -113,7 +123,7 @@ class AimlParser:
         root: PatternTree = PatternTree()
         leaf: PatternTree = root
         if pattern_elem.text:
-            toks: List[PatternToken] = Brain.literal_to_pattern(pattern_elem.text)
+            toks: List[PatternToken] = AimlParser.literal_to_pattern(pattern_elem.text)
             for tok in toks:
                 leaf.index[tok] = PatternTree()
                 leaf = leaf.index[tok]
@@ -123,7 +133,7 @@ class AimlParser:
                 leaf.index[tok] = PatternTree()
                 leaf = leaf.index[tok]
             if child.tail:
-                toks = Brain.literal_to_pattern(child.tail)
+                toks = AimlParser.literal_to_pattern(child.tail)
                 for tok in toks:
                     leaf.index[tok] = PatternTree()
                     leaf = leaf.index[tok]
@@ -164,6 +174,7 @@ class AimlParser:
         'topicstar'
     }
     def parse_template(self, elem: ET.Element) -> Translatable:
+        """Parse any element that has an evaluatable content, namely <template>"""
         return self._parse_template_expr(elem)
     
     def _parse_template_expr(self, elem: ET.Element, ignore: Optional[Set[str]] = None) -> Translatable:
@@ -171,19 +182,18 @@ class AimlParser:
         if elem.text:
             sequence.append(TranslatableWord(elem.text))
         for child in elem:
-            if ignore is not None and child.lower() in ignore:
-                continue
-            if child.tag.lower() in self._template_funcs:
-                sequence.append(self._template_funcs[child.tag.lower()](self, child))
-            elif child.tag.lower() in _stringops:
-                sequence.append(TranslatableStringop(self.parse_template(child), child.tag.lower()))
-            elif child.tag.lower() in self._substitutions:
-                sequence.append(TranslatableSubst(child.tag.lower(), self.parse_template(child)))
-            elif child.tag.lower() in self._repeats:
-                sequence.append(self.parse_repeat(child))
-            elif child.tag.lower() in self._stars:
-                sequence.append(self.parse_star(child))
-            if child.tail is not None and child.tail != '':
+            if ignore is None or child.tag.lower() not in ignore:
+                if child.tag.lower() in self._template_funcs:
+                    sequence.append(self._template_funcs[child.tag.lower()](self, child))
+                elif child.tag.lower() in _stringops:
+                    sequence.append(TranslatableStringop(self.parse_template(child), child.tag.lower()))
+                elif child.tag.lower() in self._substitutions:
+                    sequence.append(TranslatableSubst(child.tag.lower(), self.parse_template(child)))
+                elif child.tag.lower() in self._repeats:
+                    sequence.append(self.parse_repeat(child))
+                elif child.tag.lower() in self._stars:
+                    sequence.append(self.parse_star(child))
+            if child.tail:
                 sequence.append(TranslatableWord(child.tail))
         if len(sequence) == 1:
             return sequence[0]
@@ -192,31 +202,35 @@ class AimlParser:
         return TranslatableIterable(sequence)
     
     def parse_condition(self, elem: ET.Element) -> TranslatableCondition:
+        """Parse <condition> with its included <li>"""
         def_name: Optional[Translatable] = self.get_translatable_by_key(elem, 'name', False)
         def_val: Optional[Translatable] = self.get_translatable_by_key(elem, 'value', False)
         mapping: List[Tuple[Translatable, Translatable, Translatable, bool]] = []
         if def_name and def_val:
             inner: Translatable = self._parse_template_expr(elem, {'name', 'value', 'loop'})
-            mapping.append((def_name, def_value, inner, has_child(elem, False)))
+            mapping.append((def_name, def_val, inner, AimlParser.has_child(elem, False)))
             return TranslatableCondition(mapping)
         default: Optional[Tuple[Translatable, bool]] = None
         for child in elem:
-            if elem.tag.lower() != 'li':
-                raise ValueError(f'Unexpected tag {elem.tag} in <condition>')
+            if child.tag.lower() != 'li':
+                if child.tag.lower() not in {'name'}:
+                    raise ValueError(f'Unexpected tag {child.tag} in <condition>')
+                continue
             match_val: Optional[Translatable] = self.get_translatable_by_key(child, 'value', False)
             inner: Translatable = self._parse_template_expr(child, {'name', 'value', 'loop'})
             if match_val is None:
-                default = (inner, has_child(child, 'loop'))
+                default = (inner, AimlParser.has_child(child, 'loop'))
             else:
                 match_name: Optional[Translatable] = self.get_translatable_by_key(child, 'name', False)
                 if not match_name:
                     match_name = def_name
                 if not match_name:
                     raise ValueError("No name for predicate specified inside <condition>'s <li>")
-                mapping.append((match_name, match_val, inner, has_child(child, 'loop')))
+                mapping.append((match_name, match_val, inner, AimlParser.has_child(child, 'loop')))
         return TranslatableCondition(mapping, default)
     
     def parse_random(self, elem: ET.Element) -> TranslatableRandom:
+        """Parse <random>"""
         choices: List[Translatable] = []
         for child in elem:
             if child.tag.lower() != 'li':
@@ -226,6 +240,7 @@ class AimlParser:
         return TranslatableRandom(choices)
     
     def parse_set(self, elem: ET.Element) -> TranslatableSet:
+        """Parse a <set> tag that assigns a predicate"""
         name: Optional[Translatable] = self.get_translatable_by_key(elem, 'name', False)
         if name is None:
             name = self.get_translatable_by_key(elem, 'var')
@@ -233,59 +248,71 @@ class AimlParser:
         return TranslatableSet(name, expr)
     
     def parse_get(self, elem: ET.Element) -> TranslatableGet:
+        """Parse <get>"""
         name: Translatable = self.get_translatable_by_key(elem, 'name', False)
         if name is None:
             name = self.get_translatable_by_key(elem, 'var')
         return TranslatableGet(name)
     
     def parse_think(self, elem: ET.Element) -> TranslatableThink:
+        """Parse <think>"""
         return TranslatableThink(self.parse_template(elem))
     
     def parse_bot(self, elem: ET.Element) -> TranslatableBot:
+        """Parse <bot>"""
         name: Translatable = self.get_translatable_by_key(elem, 'name', False)
         if name is None:
             name = self.get_translatable_by_key(elem, 'var')
         return TranslatableBot(name)
     
     def parse_map(self, elem: ET.Element) -> TranslatableMap:
+        """Parse <map>"""
         name: Translatable = self.get_translatable_by_key(elem, 'name')
         expr: Translatable = self._parse_template_expr(elem, {'name'})
         return TranslatableMap(name, expr)
         
     def parse_learn(self, elem: ET.Element) -> TranslatableLearn:
+        """Parse <learn>"""
         if len(elem) != 1 or elem[0].tag.lower() != 'category':
             raise ValueError('<learn> tag must have exactly one child <condition> tag')
         pattern, template, that, topic = self.parse_learned_category(elem[0])
         return TranslatableLearn(pattern, template, that, topic)
     
     def parse_star(self, elem: ET.Element) -> TranslatableStar:
+        """Parse <star>, <thatstar>, and <topicstar>"""
         index: int = int(AimlParser.get_string_by_key(elem, 'index', False) or 1)
         return TranslatableStar(index, elem.tag.lower())
     
     def parse_repeat(self, elem: ET.Element) -> TranslatableRepeat:
+        """Parse <input>, <response>, and <request>"""
         index: int = int(AimlParser.get_string_by_key(elem, 'index', False) or 1)
-        return TranslatableRepeat(index, elem.tag.lower())
+        return TranslatableRepeat(index = index, repeat_type = elem.tag.lower())
     
     def parse_that_template(self, elem: ET.Element) -> TranslatableThat:
+        """Parse <that> inside a template"""
         a, b = map(int, (AimlParser.get_string_by_key(elem, 'index', False) or '1,1').split(','))
         return TranslatableThat(a, b)
     
     def parse_srai(self, elem: ET.Element) -> TranslatableSrai:
+        """Parse <srai> or <sr />"""
         if not elem.text and len(elem) == 0:
             return TranslatableSrai(TranslatableStar(1, 'star'))
         inner: Translatable = self.parse_template(elem)
         return TranslatableSrai(inner)
     
     def parse_date(self, elem: ET.Element) -> TranslatableDate:
+        """Parse <date>"""
         locale: Optional[str] = AimlParser.get_string_by_key(elem, 'locale', False)
         timezone: Optional[int] = int(AimlParser.get_string_by_key(elem, 'timezone', False) or 0)
-        dformat: Translatable = _parse_template_expr(elem, {'locale', 'timezone'})
+        dformat: Translatable = self.get_translatable_by_key(elem, 'format')
         return TranslatableDate(dformat, locale, timezone)
     
     def parse_eval(self, elem: ET.Element) -> TranslatableEval:
+        """Parse <eval>"""
         return TranslatableEval(self.parse_template(elem))
     
     def parse_learned_category(self, elem: ET.Element) -> LearnedCategory:
+        """Parse a <category> inside a <learn>"""
         category: List = [None, None, None, None]
         for child in elem:
             if child.tag.lower() == 'pattern':
@@ -302,6 +329,7 @@ class AimlParser:
     
     def parse_learned_pattern(self, elem: ET.Element) ->\
             Optional[Iterable[Union[TranslatableWord, TranslatableEval]]]:
+        """Parse a <pattern> within a <learn>"""
         seq: List = []
         if elem.text:
             seq.append(TranslatableWord(elem.text))
@@ -316,14 +344,16 @@ class AimlParser:
     
     def get_translatable_by_key(self, elem: ET.Element, key: str, die: bool = True)\
             -> Optional[Translatable]:
+        """First look if there is an attribute in elem named key, then look for a child
+        node with that tag. If none is found, and die is True, raise an error,
+        otherwise return None"""
         val: Optional[str] = None
         attribs: Dict[str, str] = dict(map(lambda x: (x[0].lower(), x[1]), elem.attrib.items()))
-        if key in attribs:
+        if key in attribs and attribs[key]:
             val = attribs[key]
         if val:
             return TranslatableWord(val)
         for child in elem:
-            child: ET.Element = elem[0]
             if child.tag.lower() == key:
                 return self.parse_template(child)
         if die:
@@ -332,6 +362,7 @@ class AimlParser:
     
     @staticmethod
     def get_string_by_key(elem: ET.Element, key: str, die: bool = True) -> Optional[str]:
+        """Get a literal string, same as get_translatable_by_key"""
         val: Optional[str] = None
         attribs: Dict[str, str] = dict(map(lambda x: (x[0].lower(), x[1]), elem.attrib.items()))
         if key in attribs:
@@ -348,6 +379,7 @@ class AimlParser:
     
     @staticmethod
     def has_child(elem: ET.Element, key: str) -> bool:
+        """Return True iff elem conains a child node with tag == key"""
         for child in elem:
             if child.tag.lower() == key:
                 return True
@@ -368,4 +400,29 @@ class AimlParser:
         'date':         parse_date,
         'eval':         parse_eval
     }
+
+    @staticmethod
+    def literal_to_pattern(toks: str) -> List[PatternToken]:
+        """Lowercases and whitespace-strips the provided string,
+        then tokenizes it into words splitting by whitespace and returns
+        a list of PatternTokens in sequential order"""
+        words: List[str] = re.split('\\s+', toks.lower().strip())
+        pattern_toks: List[PatternToken] = []
+        for word in words:
+            if word[0] == '$':
+                pattern_toks.append(PatternTokens.PRIORITY)
+                pattern_toks.append(PatternToken(\
+                    literal_value = word[1:].translate(str.maketrans('', '', string.punctuation))))
+            elif word == '#':
+                pattern_toks.append(PatternTokens.OCTOTHORPE)
+            elif word == '_':
+                pattern_toks.append(PatternTokens.UNDERSCORE)
+            elif word == '^':
+                pattern_toks.append(PatternTokens.CARAT)
+            elif word == '*':
+                pattern_toks.append(PatternTokens.ASTERISK)
+            else:
+                pattern_toks.append(PatternToken(\
+                    literal_value = word.translate(str.maketrans('', '', string.punctuation))))
+        return pattern_toks
         

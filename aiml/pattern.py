@@ -2,25 +2,24 @@
 aiml/pattern.py
 c Yaakov Schectman 2022
 """
+import logging
+import re
+import string
 from enum import (
-    Enum,
-    auto
+    auto,
+    Enum
 )
 from dataclasses import (
     dataclass,
     field
 )
 from typing import (
-    Optional,
     Dict,
-    Union,
     List,
-    Tuple
+    Optional,
+    Tuple,
+    Union
 )
-import logging
-# from xml.etree import ElementTree as ET
-import string
-import re
 
 from .protocols import ContextLike
 
@@ -135,9 +134,8 @@ class PatternTree:
     
     def match(self,\
             sentence: List[str],\
-            context: ContextLike,\
-            last_type: WildcardType = WildcardType.LITERAL) -> Optional[PatternMatch]:
-        """"""
+            context: ContextLike) -> Optional[PatternMatch]:
+        """Search for a match in this pattern tree for provided word list"""
         # If there are no more words left, either we have a match here or we have no match
         if len(sentence) == 0:
             # A corresponding THAT pattern exists, and a THAT string exists
@@ -228,12 +226,13 @@ class PatternTree:
         
         # Next is matching a set
         if PatternTokens.SET_MAP in self.index:
+            set_item: PatternTree = self.index[PatternTokens.SET_MAP]
             word: str = sentence[0].lower()
-            for key, next_pattern in self.index[PatternTokens.SET_MAP].index:
-                if context.get_in_set(key, word):
+            for key, next_pattern in set_item.index.items():
+                if context.get_in_set(key.literal_value, word):
                     set_match: Optional[PatternMatch] =\
-                        self.index[key].match(sentence[1:], context)
-                    if set_match != None:
+                        next_pattern.match(sentence[1:], context)
+                    if set_match is not None:
                         set_match.stars.insert(0, sentence[0])
                         return set_match
         
@@ -258,4 +257,4 @@ class PatternTree:
         
         # None matched
         return None
-        
+    

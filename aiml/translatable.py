@@ -3,25 +3,25 @@ aiml/src/elements.py
 c Yaakov Schectman 2022
 """
 
+import copy
+import random
+import string
+import xml.etree.ElementTree as ET
+from abc import ABC
 from dataclasses import (
     dataclass,
     field
 )
 from typing import (
-    Optional,
-    List,
-    Iterable,
     Callable,
+    Dict,
+    Iterable,
+    List,
+    Optional,
     Sequence,
     Tuple,
-    Dict,
     Union
 )
-from abc import ABC
-import xml.etree.ElementTree as ET
-import string
-import random
-import copy
 
 from .protocols import ContextLike
 
@@ -57,7 +57,10 @@ class TranslatableWord(Translatable):
         
     def append_to(self, tree: ET.Element) -> None:
         if len(tree) == 0:
-            tree.text = self.word
+            if not tree.text:
+                tree.text = self.word
+            else:
+                tree.text += self.word
         else:
             tail: str = tree[-1].tail
             if tail is None:
@@ -181,7 +184,7 @@ class TranslatableDate(Translatable):
     locale: Optional[str] = None
     timezone: Optional[int] = 0
     def translate(self, context: ContextLike) -> str:
-        format_str: str = dformat.translate(context)
+        format_str: str = self.dformat.translate(context)
         return context.get_date(format_str, self.locale, self.timezone)
     
     def eval_closure(self, context: ContextLike) -> None:
@@ -205,8 +208,8 @@ class TranslatableMap(Translatable):
     map_expr: Translatable
     key_expr: Translatable
     def translate(self, context: ContextLike) -> str:
-        map_str: str = map_expr.translate(context)
-        key_str: str = key_expr.translate(context)
+        map_str: str = self.map_expr.translate(context)
+        key_str: str = self.key_expr.translate(context)
         return context.get_map(map_str, key_str)
     
     def eval_closure(self, context: ContextLike) -> None:
