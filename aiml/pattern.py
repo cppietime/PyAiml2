@@ -17,21 +17,21 @@ from typing import (
     List,
     Tuple
 )
+import logging
 # from xml.etree import ElementTree as ET
 import string
+import re
 
 from .protocols import ContextLike
-
-_strip = string.punctuation + string.whitespace
 
 class WildcardType(Enum):
     PRIORITY        =  0
     OCTOTHORPE      =  1
     UNDERSCORE      =  2
-    SET_MAP         =  3
-    BOT_VAR         =  4
-    GET_VAR         =  5
-    LITERAL         =  6
+    BOT_VAR         =  3
+    GET_VAR         =  4
+    LITERAL         =  5
+    SET_MAP         =  6
     CARAT           =  7
     ASTERISK        =  8
     DELIM_THAT      =  9
@@ -65,7 +65,7 @@ class PatternTokens(object):
     BOT_VAR:        PatternToken = PatternToken(wildcard_type = WildcardType.BOT_VAR)
     GET_VAR:        PatternToken = PatternToken(wildcard_type = WildcardType.GET_VAR)
     CARAT:          PatternToken = PatternToken(wildcard_type = WildcardType.CARAT)
-    ASTERISK:       PatternToken = PatternToken(wildcard_type = WildcardType.CARAT)
+    ASTERISK:       PatternToken = PatternToken(wildcard_type = WildcardType.ASTERISK)
     DELIM_THAT:     PatternToken = PatternToken(wildcard_type = WildcardType.DELIM_THAT)
     DELIM_TOPIC:    PatternToken = PatternToken(wildcard_type = WildcardType.DELIM_TOPIC)
     END_PATTERN:    PatternToken = PatternToken(wildcard_type = WildcardType.END_PATTERN)
@@ -122,6 +122,17 @@ class PatternTree:
             self.index[prefix] = PatternTree()
         self.index[prefix].add(pattern_tokens[1:], result, that_tokens, topic_tokens)
     
+    def merge(self, other: 'PatternTree') -> None:
+        """Merge all pattersn from another tree into this one
+        Overrides conflicting patterns with those of the other tree"""
+        for key in other.index:
+            if key in self.index:
+                self.index[key].merge(other.index[key])
+            else:
+                self.index[key] = other.index[key]
+        if other.terminal is not None:
+            self.terminal = other.terminal
+    
     def match(self,\
             sentence: List[str],\
             context: ContextLike,\
@@ -132,11 +143,11 @@ class PatternTree:
             # A corresponding THAT pattern exists, and a THAT string exists
             if PatternTokens.DELIM_THAT in self.index and\
                     len(context.that_history) != 0 and\
-                    len(context.that_history[0]) != 0:
+                    len(context.that_history[-1]) != 0:
                 that: str = context.that_history[-1][-1]\
                     .lower()\
                     .translate(str.maketrans('', '', string.punctuation))
-                that_words: List[str] = list(filter(lambda x: x != '', that.split(' ')))
+                that_words: List[str] = re.split('\\s+', that)
                 that_match: Optional[PatternMatch] =\
                     self.index[PatternTokens.DELIM_THAT].match(that_words, context)
                 if that_match is not None:
@@ -147,7 +158,7 @@ class PatternTree:
                 topic: str = context.user_vars['topic']\
                     .lower()\
                     .translate(str.maketrans('', '', string.punctuation))
-                topic_words: List[str] = list(filter(lambda x: x != '', topic.split(' ')))
+                topic_words: List[str] = re.split('\\s+', topic)
                 topic_match: Optional[PatternMatch] =\
                     self.index[PatternTokens.DELIM_TOPIC].match(topic_words, context)
                 if topic_match is not None:
@@ -177,9 +188,43 @@ class PatternTree:
             for i in range(star_index, len(sentence) + 1):
                 star_match: PatternMatch = next_pattern.match(sentence[i:], context)
                 if star_match != None:
-                    new_star = ' '.join(sentence[star_index : i])
-                    star_match.stars.append(new_star)
+                    # Here I join on space since these are tokens that have already
+                    # been split on whitespace
+                    new_star = ' '.join(sentence[:i])
+                    star_match.stars.insert(0, new_star)
                     return star_match
+                    
+        # If we are looking for a bot variable
+        if PatternTokens.BOT_VAR in self.index:
+            word: str = sentence[0].lower().translate(str.maketrans('', '', string.punctuation))
+            for key, next_pattern in self.index[PatternTokens.BOT_VAR].index:
+                if context.get_bot(key)\
+                        .lower()\
+                        .translate(str.maketrans('', '', string.punctuation)) == word:
+                    bot_match: Optional[PatternMatch] =\
+                        self.index[key].match(sentence[1:], context)
+                    if bot_match != None:
+                        bot_match.stars.insert(0, sentence[0])
+                        return bot_match
+        # If we are looking for a user variable
+        if PatternTokens.GET_VAR in self.index:
+            word: str = sentence[0].lower().translate(str.maketrans('', '', string.punctuation))
+            for key, next_pattern in self.index[PatternTokens.GET_VAR].index:
+                if context.get_var(key)\
+                        .lower().\
+                        translate(str.maketrans('', '', string.punctuation)) == word:
+                    var_match: Optional[PatternMatch] =\
+                        self.index[key].match(sentence[1:], context)
+                    if var_match != None:
+                        var_match.stars.insert(0, sentence[0])
+                        return var_match
+        
+        # Default priority literal word
+        literal: PatternToken = PatternToken(literal_value = sentence[0])
+        if literal in self.index:
+            lit_match: PatternMatch = self.index[literal].match(sentence[1:], context)
+            if lit_match is not None:
+                return lit_match
         
         # Next is matching a set
         if PatternTokens.SET_MAP in self.index:
@@ -189,35 +234,8 @@ class PatternTree:
                     set_match: Optional[PatternMatch] =\
                         self.index[key].match(sentence[1:], context)
                     if set_match != None:
-                        set_match.stars.append(sentence[0])
+                        set_match.stars.insert(0, sentence[0])
                         return set_match
-        # If we are looking for a bot variable
-        if PatternTokens.BOT_VAR in self.index:
-            word: str = sentence[0].lower().strip(string.punctuation)
-            for key, next_pattern in self.index[PatternTokens.BOT_VAR].index:
-                if context.get_bot(key).lower().strip(string.punctuation) == word:
-                    bot_match: Optional[PatternMatch] =\
-                        self.index[key].match(sentence[1:], context)
-                    if bot_match != None:
-                        bot_match.stars.append(sentence[0])
-                        return bot_match
-        # If we are looking for a user variable
-        if PatternTokens.GET_VAR in self.index:
-            word: str = sentence[0].lower().strip(string.punctuation)
-            for key, next_pattern in self.index[PatternTokens.GET_VAR].index:
-                if context.get_var(key).lower().strip(string.punctuation) == word:
-                    var_match: Optional[PatternMatch] =\
-                        self.index[key].match(sentence[1:], context)
-                    if var_match != None:
-                        var_match.stars.append(sentence[0])
-                        return var_match
-        
-        # Default priority literal word
-        literal: PatternToken = PatternToken(literal_value = sentence[0])
-        if literal in self.index:
-            lit_match: PatternMatch = self.index[literal].match(sentence[1:], context)
-            if lit_match is not None:
-                return lit_match
         
         # Carat and asterisk do the same thing, just a matter of whether they require
         # skipping ahead by one word before we start
@@ -233,8 +251,9 @@ class PatternTree:
             for i in range(star_index, len(sentence) + 1):
                 star_match: PatternMatch = next_pattern.match(sentence[i:], context)
                 if star_match != None:
-                    new_star = ' '.join(sentence[star_index : i])
-                    star_match.stars.append(new_star)
+                    # See above for comment on joining on space
+                    new_star = ' '.join(sentence[:i])
+                    star_match.stars.insert(0, new_star)
                     return star_match
         
         # None matched

@@ -5,8 +5,12 @@ c Yaakov Schectman 2022
 
 import locale
 import string
-from dataclasses import dataclass
+from dataclasses import (
+    dataclass,
+    field
+)
 from datetime import datetime, timedelta
+import logging
 from typing import (
     Dict,
     Set,
@@ -14,6 +18,7 @@ from typing import (
     Optional,
     Iterable
 )
+import re
 
 from . import (
     translatable,
@@ -27,23 +32,25 @@ class BrainConfig:
     learn_file_path: str
     bot_file_path: str
 
+@dataclass
 class Brain(object):
-    config: BrainConfig
-    bot_vars: Dict[str, str]
-    user_vars: Dict[str, str]
-    substitutions: Dict[str, Dict[str, str]]
-    maps: Dict[str, Dict[str, str]]
-    sets: Dict[str, Set[str]]
-    history: Dict[str, List[str]]
-    that_history: List[List[str]]
-    stars: List[str]
-    that_stars: List[str]
-    topic_stars: List[str]
-    pattern_tree: pattern.PatternTree = pattern.PatternTree()
-    learned_tree: pattern.PatternTree = pattern.PatternTree()
+    config: BrainConfig = field(default_factory = lambda: None)
+    bot_vars: Dict[str, str] = field(default_factory = dict)
+    user_vars: Dict[str, str] = field(default_factory = dict)
+    substitutions: Dict[str, Dict[str, str]] = field(default_factory = dict)
+    maps: Dict[str, Dict[str, str]] = field(default_factory = dict)
+    sets: Dict[str, Set[str]] = field(default_factory = dict)
+    history: Dict[str, List[str]] = field(default_factory =\
+        lambda: {'input': [], 'request': [], 'response': []})
+    that_history: List[List[str]] = field(default_factory = list)
+    stars: List[str] = field(default_factory = list)
+    that_stars: List[str] = field(default_factory = list)
+    topic_stars: List[str] = field(default_factory = list)
+    pattern_tree: pattern.PatternTree = field(default_factory = pattern.PatternTree)
+    learned_tree: pattern.PatternTree = field(default_factory = pattern.PatternTree)
     
     def get_srai(self, subquery: str) -> str:
-        raise NotImplementedError()
+        return self.get_string_for(subquery)
     
     def get_in_set(self, set_name: str, key: str) -> bool:
         return set_name.lower() in self.sets and key.lower() in self.sets[set_name.lower()]
@@ -85,7 +92,7 @@ class Brain(object):
         return ''
     
     def get_that(self, index: int, sentence: int) -> str:
-        if index < len(self.that_history) and sentence < len(self.that_history[index]):
+        if index <= len(self.that_history) and sentence <= len(self.that_history[-index]):
             return self.that_history[-index][-sentence]
         return ''
     
@@ -114,15 +121,19 @@ class Brain(object):
         if index - 1 < 0 or index - 1 >= len(choice):
             return choice[0]
         return choice[index]
-    
+
     @staticmethod
     def literal_to_pattern(toks: str) -> List[pattern.PatternToken]:
-        words: List[str] = list(filter(lambda x: x != '', toks.lower().strip().split(' ')))
+        """Lowercases and whitespace-strips the provided string,
+        then tokenizes it into words splitting by whitespace and returns
+        a list of PatternTokens in sequential order"""
+        words: List[str] = re.split('\\s+', toks.lower().strip())
         pattern_toks: List[pattern.PatternToken] = []
         for word in words:
             if word[0] == '$':
                 pattern_toks.append(pattern.PatternTokens.PRIORITY)
-                pattern_toks.append(pattern.PatternToken(literal_value = word[1:].strip(string.punctuation)))
+                pattern_toks.append(pattern.PatternToken(\
+                    literal_value = word[1:].translate(str.maketrans('', '', string.punctuation))))
             elif word == '#':
                 pattern_toks.append(pattern.PatternTokens.OCTOTHORPE)
             elif word == '_':
@@ -132,7 +143,8 @@ class Brain(object):
             elif word == '*':
                 pattern_toks.append(pattern.PatternTokens.ASTERISK)
             else:
-                pattern_toks.append(pattern.PatternToken(literal_value = word.strip(string.punctuation)))
+                pattern_toks.append(pattern.PatternToken(\
+                    literal_value = word.translate(str.maketrans('', '', string.punctuation))))
         return pattern_toks
     
     def learn_strtoks(self, pattern: Iterable[str],\
@@ -140,7 +152,10 @@ class Brain(object):
             that: Optional[Iterable[str]] = None,\
             topic: Optional[Iterable[str]] = None,\
             learned: bool = False) -> None:
-        pattern_toks: List[pattern.PatternToken] = Brain.literal_to_pattern(' '.join(pattern))
+        """Learn a new pattern from the <learn> tag
+        Desired spaces will be encoded in the literal segments of the pattern, so I will
+        join on the empty string"""
+        pattern_toks: List[pattern.PatternToken] = Brain.literal_to_pattern(''.join(pattern))
         that_toks = None if that is None else\
             Brain.literal_to_pattern(' '.join(that))
         topic_toks = None if topic is None else\
@@ -148,3 +163,26 @@ class Brain(object):
         self.pattern_tree.add(pattern_toks, template, that_toks, topic_toks)
         if learned:
             self.learned_tree.add(pattern_toks, template, that_toks, topic_toks)
+    
+    def get_string_for(self, provided: str) -> str:
+        self.history['request'].append(provided)
+        sentences: List[str] = provided.split('.')
+        output: List[str] = []
+        that_lst: List[str] = []
+        for sentence in sentences:
+            self.history['input'].append(sentence.split)
+            words = re.split('\\s+', sentence.lower().strip())
+            match: Optional[PatternMatch] = self.pattern_tree.match(words, self)
+            if match is None:
+                output.append(None)
+            else:
+                self.stars = match.stars
+                self.that_stars = match.that_stars
+                self.topic_stars = match.topic_stars
+                rendered: str = match.translatable.translate(self)
+                that_lst.append(rendered)
+                output.append(rendered)
+        self.that_history.append(that_lst)
+        response: str = '. '.join(filter(bool, output))
+        self.history['response'].append(response)
+        return response
