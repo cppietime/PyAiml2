@@ -1,20 +1,26 @@
 """
-aiml/src/parser.py
+aiml/aiml/parser.py
 c Yaakov Schectman 2022
 """
 
+import logging
+import re
 import xml.etree.ElementTree as ET
+from dataclasses import (
+    dataclass,
+    field
+)
+from io import IOBase
+from os import path
 from typing import (
     Callable,
+    ClassVar,
     Tuple,
     List,
     Dict,
     Optional,
     Set
 )
-from io import IOBase
-import re
-import logging
 
 from .pattern import (
     PatternTree,
@@ -24,12 +30,23 @@ from .pattern import (
 )
 from .translatable import *
 from .translatable import _stringops
-from .config import FilesConfig
+from .config import BrainConfig
 
-
+@dataclass
 class AimlParser:
     """A parser to convert AIML XML data into a full pattern tree"""
+    config: BrainConfig
     topic_pattern: Optional[List[PatternToken]] = None
+    sub_names: Set[str] = field(init = False, default_factory=set)
+    
+    def __post_init__(self):
+        if self.config is not None and self.config.sub_files:
+            self.sub_names = set(map(\
+                lambda x: path.splitext(path.basename(x))[0].lower(),
+                self.config.sub_files))
+    
+    
+    #==========Public facing methods to start parsing==========
     
     def parse(self, source: Union[IOBase, str]) -> PatternTree:
         # return self.parse_aiml(ET.parse(source))
@@ -62,20 +79,6 @@ class AimlParser:
                 root.merge(self.parse_topic(child))
             else:
                 raise ValueError(f'Unexpected tag {child.tag} in <aiml>')
-        return root
-    
-    def parse_topic(self, elem: ET.Element) -> PatternTree:
-        """Parses all categories in a topic into a single PatternTree for that topic"""
-        if 'name' not in elem.attrib:
-            raise ValueError('Top-level <topic> tag with no name attribute')
-        self.topic_pattern = AimlParser.literal_to_pattern(elem.get('name'))
-        root: PatternTree = PatternTree()
-        for child in elem:
-            if child.tag.lower() != 'category':
-                raise ValueError(f'Unexpected tag {child.tag} in top-level <topic>')
-            branch: PatternTree = self.parse_category(child)
-            root.merge(branch)
-        self.topic_pattern = None
         return root
     
     def parse_category(self, elem: ET.Element) -> PatternTree:
@@ -117,6 +120,23 @@ class AimlParser:
         leaf.terminal = template
         return root
     
+    #==========For the most part, these methods are only called internally==========
+    #==========Methods for parsing XML elements within an IML file==================
+    
+    def parse_topic(self, elem: ET.Element) -> PatternTree:
+        """Parses all categories in a topic into a single PatternTree for that topic"""
+        if 'name' not in elem.attrib:
+            raise ValueError('Top-level <topic> tag with no name attribute')
+        self.topic_pattern = AimlParser.literal_to_pattern(elem.get('name'))
+        root: PatternTree = PatternTree()
+        for child in elem:
+            if child.tag.lower() != 'category':
+                raise ValueError(f'Unexpected tag {child.tag} in top-level <topic>')
+            branch: PatternTree = self.parse_category(child)
+            root.merge(branch)
+        self.topic_pattern = None
+        return root
+    
     def parse_pattern(self, pattern_elem: ET.Element) -> Tuple[PatternTree, PatternTree]:
         """Parse a <pattern> element into a PatternTree
         Returns (the root of the tree, the leaf that matches the pattern)"""
@@ -155,24 +175,7 @@ class AimlParser:
                 name = AimlParser.get_string_by_key(elem, 'var')
             return [PatternTokens.BOT_VAR, PatternToken(name)]
         raise ValueError(f'Element with tag {elem.tag} not expected inside <pattern>, <that>, or <topic>')
-    
-    _substitutions: Set[str] = {
-        'person',
-        'person1',
-        'gender',
-        'normalize',
-        'denormalize'
-    }
-    _repeats: Set[str] = {
-        'response',
-        'input',
-        'request'
-    }
-    _stars: Set[str] = {
-        'star',
-        'thatstar',
-        'topicstar'
-    }
+        
     def parse_template(self, elem: ET.Element) -> Translatable:
         """Parse any element that has an evaluatable content, namely <template>"""
         return self._parse_template_expr(elem)
@@ -187,7 +190,7 @@ class AimlParser:
                     sequence.append(self._template_funcs[child.tag.lower()](self, child))
                 elif child.tag.lower() in _stringops:
                     sequence.append(TranslatableStringop(self.parse_template(child), child.tag.lower()))
-                elif child.tag.lower() in self._substitutions:
+                elif child.tag.lower() in self.sub_names:
                     sequence.append(TranslatableSubst(child.tag.lower(), self.parse_template(child)))
                 elif child.tag.lower() in self._repeats:
                     sequence.append(self.parse_repeat(child))
@@ -198,7 +201,7 @@ class AimlParser:
         if len(sequence) == 1:
             return sequence[0]
         elif len(sequence) == 0:
-            raise ValueError('Empty template')
+            return TranslatableNull()
         return TranslatableIterable(sequence)
     
     def parse_condition(self, elem: ET.Element) -> TranslatableCondition:
@@ -337,10 +340,43 @@ class AimlParser:
             if child.tag.lower() == 'eval':
                 seq.append(self.parse_eval(child))
             else:
-                seq.append(TranslatableWord(ET.tostring(child)))
+                seq.append(TranslatableWord(ET.tostring(child, 'unicode')))
             if child.tail:
                 seq.append(TranslatableWord(child.tail))
         return seq
+    
+    def parse_unlearn(self, elem: ET.Element) -> TranslatableUnlearn:
+        """Pretty straightforward method for <unlearn />"""
+        return TranslatableUnlearn()
+
+    #==========A public-facing static method that Brain also uses=========
+
+    @staticmethod
+    def literal_to_pattern(toks: str) -> List[PatternToken]:
+        """Lowercases and whitespace-strips the provided string,
+        then tokenizes it into words splitting by whitespace and returns
+        a list of PatternTokens in sequential order"""
+        words: List[str] = re.split('\\s+', toks.lower().strip())
+        pattern_toks: List[PatternToken] = []
+        for word in words:
+            if word[0] == '$':
+                pattern_toks.append(PatternTokens.PRIORITY)
+                pattern_toks.append(PatternToken(\
+                    literal_value = word[1:]))#.translate(str.maketrans('', '', string.punctuation))))
+            elif word == '#':
+                pattern_toks.append(PatternTokens.OCTOTHORPE)
+            elif word == '_':
+                pattern_toks.append(PatternTokens.UNDERSCORE)
+            elif word == '^':
+                pattern_toks.append(PatternTokens.CARAT)
+            elif word == '*':
+                pattern_toks.append(PatternTokens.ASTERISK)
+            else:
+                pattern_toks.append(PatternToken(\
+                    literal_value = word))#.translate(str.maketrans('', '', string.punctuation))))
+        return pattern_toks
+    
+    #==========Helper functions to reduce redundancy of code==========
     
     def get_translatable_by_key(self, elem: ET.Element, key: str, die: bool = True)\
             -> Optional[Translatable]:
@@ -385,7 +421,19 @@ class AimlParser:
                 return True
         return False
     
-    _template_funcs: Dict[str, Callable[['AimlParser', ET.Element], Translatable]] = {
+    #==========Internally used class vars, here to stay out of the way==========
+    
+    _repeats: ClassVar[Set[str]] = {
+        'response',
+        'input',
+        'request'
+    }
+    _stars: ClassVar[Set[str]] = {
+        'star',
+        'thatstar',
+        'topicstar'
+    }
+    _template_funcs: ClassVar[Dict[str, Callable[['AimlParser', ET.Element], Translatable]]] = {
         'condition':    parse_condition,
         'random':       parse_random,
         'set':          parse_set,
@@ -398,31 +446,7 @@ class AimlParser:
         'srai':         parse_srai,
         'sr':           parse_srai,
         'date':         parse_date,
-        'eval':         parse_eval
+        'eval':         parse_eval,
+        'unlearn':      parse_unlearn
     }
-
-    @staticmethod
-    def literal_to_pattern(toks: str) -> List[PatternToken]:
-        """Lowercases and whitespace-strips the provided string,
-        then tokenizes it into words splitting by whitespace and returns
-        a list of PatternTokens in sequential order"""
-        words: List[str] = re.split('\\s+', toks.lower().strip())
-        pattern_toks: List[PatternToken] = []
-        for word in words:
-            if word[0] == '$':
-                pattern_toks.append(PatternTokens.PRIORITY)
-                pattern_toks.append(PatternToken(\
-                    literal_value = word[1:].translate(str.maketrans('', '', string.punctuation))))
-            elif word == '#':
-                pattern_toks.append(PatternTokens.OCTOTHORPE)
-            elif word == '_':
-                pattern_toks.append(PatternTokens.UNDERSCORE)
-            elif word == '^':
-                pattern_toks.append(PatternTokens.CARAT)
-            elif word == '*':
-                pattern_toks.append(PatternTokens.ASTERISK)
-            else:
-                pattern_toks.append(PatternToken(\
-                    literal_value = word.translate(str.maketrans('', '', string.punctuation))))
-        return pattern_toks
         

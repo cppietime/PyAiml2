@@ -1,6 +1,10 @@
 """
-aiml/src/elements.py
+aiml/aiml/elements.py
 c Yaakov Schectman 2022
+
+A Translatable is an element in a response template that can be performed.
+When translate is called on a Translatable, any side effects it has are
+performed, and the output is returned.
 """
 
 import copy
@@ -25,6 +29,8 @@ from typing import (
 
 from .protocols import ContextLike
 
+#==========Abstract base class out of which all Translatables are derived==========
+
 class Translatable(ABC):
     """
     Anything that can be translated to a text value
@@ -48,6 +54,9 @@ class Translatable(ABC):
         self.append_to(tree)
         return ET.tostring(tree, 'unicode', short_empty_elements = True)
 
+#==========Concrete Translatable classes===========================
+#==========Simple Translatables that require no recursion==========
+
 @dataclass
 class TranslatableWord(Translatable):
     """A simple literal"""
@@ -70,73 +79,136 @@ class TranslatableWord(Translatable):
             tree[-1].tail = tail
 
 @dataclass
-class TranslatableIterable(Translatable):
-    """A translatable that contains a sequence of zero or more translatables
-    The pieces are joined by the empty string because separating spaces will
-    end up included in the literal segments"""
-    elements: Iterable[Translatable] = field(default_factory = list)
+class TranslatableUnlearn(Translatable):
+    """<unlearn />
+    I made this one up. Resets the learned rules
+    Does not take effect until next reload though"""
     def translate(self, context: ContextLike) -> str:
-        return ''\
-            .join(\
-                filter(\
-                    lambda y: y != '',\
-                    map(\
-                        lambda x: x.translate(context), self.elements)))
-    
-    def eval_closure(self, context: ContextLike) -> None:
-        for i, element in enumerate(self.elements):
-            element.eval_closure(context)
-            if element.bind_closure():
-                self.elements[i] = TranslatableWord(element.translate(context))
-        
-    def append_to(self, tree: ET.Element) -> None:
-        for child in self.elements:
-            child.append_to(tree)
-
-@dataclass
-class TranslatableThink(Translatable):
-    """<think>inner XML</think>
-    A translatable that calls its inner XML when called, but returns nothing"""
-    child: Translatable
-    def translate(self, context: ContextLike) -> str:
-        if self.child is not None:
-            self.child.translate(context)
+        context.unlearn()
         return ''
     
-    def eval_closure(self, context: ContextLike) -> None:
-        self.child.eval_closure(context)
-        if self.child.bind_closure():
-            self.child = TranslatableWord(self.child.translate(context))
-        
     def append_to(self, tree: ET.Element) -> None:
-        root: ET.Element = ET.SubElement(tree, 'think')
-        self.child.append_to(root)
+        ET.SubElement(tree, 'unlearn')
 
 @dataclass
-class TranslatableSet(Translatable):
-    """<set><name>variable_name</name><value>set_value</value></set>
-    Sets a variable to an evaluated value and returns the value"""
-    key_expr: Translatable
-    value_expr: Translatable
+class TranslatableNull(Translatable):
+    """Literally an empty element"""
     def translate(self, context: ContextLike) -> str:
-        key: str = self.key_expr.translate(context)
-        value: str = self.value_expr.translate(context)
-        context.set_var(key, value)
-        return value
+        return ''
+    
+    def append_to(self, tree: ET.Element) -> None:
+        pass
+
+#==========Format/transform applications==========
+
+@dataclass
+class TranslatableStringop(Translatable):
+    """<sentence | uppercase | lowercase | formal | explode>
+    Performs a string operation"""
+    inner: Translatable
+    transform: str
+    def translate(self, context: ContextLike) -> str:
+        return _stringops[self.transform.lower()](self.inner.translate(context))
     
     def eval_closure(self, context: ContextLike) -> None:
-        self.key_expr.eval_closure(context)
-        if self.key_expr.bind_closure():
-            self.key_expr = TranslatableWord(self.key_expr.translate(context))
-        self.value_expr.eval_closure(context)
-        if self.value_expr.bind_closure():
-            self.value_expr = TranslatableWord(self.value_expr.translate(context))
+        self.inner.eval_closure(context)
+        if self.inner.bind_closure():
+            self.inner = TranslatableWord(self.inner.translate(context))
         
     def append_to(self, tree: ET.Element) -> None:
-        root: ET.Element = ET.SubElement(tree, 'set')
-        name: ET.Element = ET.SubElement(root, 'name')
-        self.key_expr.append_to(name)
-        self.value_expr.append_to(root)
+        root: ET.Element = ET.SubElement(tree, self.transform)
+        self.inner.append_to(root)
+
+@dataclass
+class TranslatableDate(Translatable):
+    """<date locale="..." timezone="..."><format>date format</format></date>
+    Returns the current date according to the provided format"""
+    dformat: Translatable
+    locale: Optional[str] = None
+    timezone: Optional[int] = 0
+    def translate(self, context: ContextLike) -> str:
+        format_str: str = self.dformat.translate(context)
+        return context.get_date(format_str, self.locale, self.timezone)
+    
+    def eval_closure(self, context: ContextLike) -> None:
+        self.dformat.eval_closure(context)
+        if self.dformat.bind_closure():
+            self.dformat = TranslatableWord(self.dformat.translate(context))
+        
+    def append_to(self, tree: ET.Element) -> None:
+        root: ET.Element = ET.SubElement(tree, 'date')
+        if self.locale is not None:
+            date.attrib['locale'] = self.locale
+        if self.timezone is not None:
+            date.attrib['timezone'] = str(self.timezone)
+        name: ET.Element = ET.SubElement(root, 'format')
+        self.dformat.append_to(name)
+
+@dataclass
+class TranslatableRandom(Translatable):
+    """<random><li>output1</li><li>output2</li>...</random>
+    Randomly selects one of the li elements to use as output"""
+    children: Sequence[Translatable]
+    def translate(self, context: ContextLike) -> str:
+        child: Translatable = random.choice(self.children)
+        return child.translate(context)
+    
+    def eval_closure(self, context: ContextLike) -> None:
+        for i, child in enumerate(self.children):
+            child.eval_closure(context)
+            if child.bind_closure():
+                self.children[i] = TranslatableWord(child.translate(context))
+        
+    def append_to(self, tree: ET.Element) -> None:
+        root: ET.Element = ET.SubElement(tree, 'random')
+        for child in self.children:
+            li: ET.Element = ET.SubElement(root, 'li')
+            child.append_to(li)
+
+#==========Variable replacement tags==========
+
+@dataclass
+class TranslatableStar(Translatable):
+    """<star | thatstar | topicstar>
+    Replace with matching wildcard text in input"""
+    index: int = 1
+    star_type: str = 'star'
+    def translate(self, context: ContextLike) -> str:
+        return context.get_star(self.index - 1, self.star_type)
+        
+    def append_to(self, tree: ET.Element) -> None:
+        root: ET.Element = ET.SubElement(tree, self.star_type)
+        if self.index != 1:
+            root.attrib['index'] = str(self.index)
+
+@dataclass
+class TranslatableRepeat(Translatable):
+    """<request | response | input index="n" />
+    Get the n-th input sentence, full input request, or full response"""
+    repeat_type: str
+    index: int = 1
+    def translate(self, context: ContextLike) -> str:
+        return context.get_repeat(self.index, self.repeat_type)
+        
+    def append_to(self, tree: ET.Element) -> None:
+        root: ET.Element = ET.SubElement(tree, self.repeat_type)
+        if self.index != 1:
+            root.attrib['index'] = str(self.index)
+
+@dataclass
+class TranslatableThat(Translatable):
+    """<that index="m,n" />
+    Substitutes with the n-th to last sentence in the m-th to last response"""
+    response: int = 1
+    sentence: int = 1
+    def translate(self, context: ContextLike) -> str:
+        return context.get_that(self.response, self.sentence)
+        
+    def append_to(self, tree: ET.Element) -> None:
+        root: ET.Element = ET.SubElement(tree, 'that')
+        root.attrib['index'] = f'{self.response},{self.sentence}'
+
+#==========Get variables/state==========
 
 @dataclass
 class TranslatableGet(Translatable):
@@ -175,31 +247,6 @@ class TranslatableBot(Translatable):
         root: ET.Element = ET.SubElement(tree, 'bot')
         name: ET.Element = ET.SubElement(root, 'name')
         self.key_expr.append_to(name)
-
-@dataclass
-class TranslatableDate(Translatable):
-    """<date locale="..." timezone="..."><format>date format</format></date>
-    Returns the current date according to the provided format"""
-    dformat: Translatable
-    locale: Optional[str] = None
-    timezone: Optional[int] = 0
-    def translate(self, context: ContextLike) -> str:
-        format_str: str = self.dformat.translate(context)
-        return context.get_date(format_str, self.locale, self.timezone)
-    
-    def eval_closure(self, context: ContextLike) -> None:
-        self.dformat.eval_closure(context)
-        if self.dformat.bind_closure():
-            self.dformat = TranslatableWord(self.dformat.translate(context))
-        
-    def append_to(self, tree: ET.Element) -> None:
-        root: ET.Element = ET.SubElement(tree, 'date')
-        if self.locale is not None:
-            date.attrib['locale'] = self.locale
-        if self.timezone is not None:
-            date.attrib['timezone'] = str(self.timezone)
-        name: ET.Element = ET.SubElement(root, 'format')
-        self.dformat.append_to(name)
 
 @dataclass
 class TranslatableMap(Translatable):
@@ -244,6 +291,77 @@ class TranslatableSubst(Translatable):
     def append_to(self, tree: ET.Element) -> None:
         root: ET.Element = ET.SubElement(tree, self.subst_type)
         self.expr.append_to(root)
+
+@dataclass
+class TranslatableSet(Translatable):
+    """<set><name>variable_name</name><value>set_value</value></set>
+    Sets a variable to an evaluated value and returns the value"""
+    key_expr: Translatable
+    value_expr: Translatable
+    def translate(self, context: ContextLike) -> str:
+        key: str = self.key_expr.translate(context)
+        value: str = self.value_expr.translate(context)
+        context.set_var(key, value)
+        return value
+    
+    def eval_closure(self, context: ContextLike) -> None:
+        self.key_expr.eval_closure(context)
+        if self.key_expr.bind_closure():
+            self.key_expr = TranslatableWord(self.key_expr.translate(context))
+        self.value_expr.eval_closure(context)
+        if self.value_expr.bind_closure():
+            self.value_expr = TranslatableWord(self.value_expr.translate(context))
+        
+    def append_to(self, tree: ET.Element) -> None:
+        root: ET.Element = ET.SubElement(tree, 'set')
+        name: ET.Element = ET.SubElement(root, 'name')
+        self.key_expr.append_to(name)
+        self.value_expr.append_to(root)
+
+#==========Recursive Translatables==========
+
+@dataclass
+class TranslatableIterable(Translatable):
+    """A translatable that contains a sequence of zero or more translatables
+    The pieces are joined by the empty string because separating spaces will
+    end up included in the literal segments"""
+    elements: Iterable[Translatable] = field(default_factory = list)
+    def translate(self, context: ContextLike) -> str:
+        return ''\
+            .join(\
+                filter(\
+                    lambda y: y != '',\
+                    map(\
+                        lambda x: x.translate(context), self.elements)))
+    
+    def eval_closure(self, context: ContextLike) -> None:
+        for i, element in enumerate(self.elements):
+            element.eval_closure(context)
+            if element.bind_closure():
+                self.elements[i] = TranslatableWord(element.translate(context))
+        
+    def append_to(self, tree: ET.Element) -> None:
+        for child in self.elements:
+            child.append_to(tree)
+
+@dataclass
+class TranslatableThink(Translatable):
+    """<think>inner XML</think>
+    A translatable that calls its inner XML when called, but returns nothing"""
+    child: Translatable
+    def translate(self, context: ContextLike) -> str:
+        if self.child is not None:
+            self.child.translate(context)
+        return ''
+    
+    def eval_closure(self, context: ContextLike) -> None:
+        self.child.eval_closure(context)
+        if self.child.bind_closure():
+            self.child = TranslatableWord(self.child.translate(context))
+        
+    def append_to(self, tree: ET.Element) -> None:
+        root: ET.Element = ET.SubElement(tree, 'think')
+        self.child.append_to(root)
 
 @dataclass
 class TranslatableSrai(Translatable):
@@ -317,53 +435,6 @@ class TranslatableCondition(Translatable):
             if self.default[1]:
                 ET.SubElement(li, 'loop')
 
-_stringops: Dict[str, Callable[[str], str]] = {
-    'explode': lambda x: ' '.join(list(x)),
-    'uppercase': str.upper,
-    'lowercase': str.lower,
-    'formal': str.title,
-    'sentence': str.capitalize
-}
-
-@dataclass
-class TranslatableStringop(Translatable):
-    """<sentence | uppercase | lowercase | formal | explode>
-    Performs a string operation"""
-    inner: Translatable
-    transform: str
-    def translate(self, context: ContextLike) -> str:
-        return _stringops[self.transform.lower()](self.inner.translate(context))
-    
-    def eval_closure(self, context: ContextLike) -> None:
-        self.inner.eval_closure(context)
-        if self.inner.bind_closure():
-            self.inner = TranslatableWord(self.inner.translate(context))
-        
-    def append_to(self, tree: ET.Element) -> None:
-        root: ET.Element = ET.SubElement(tree, self.transform)
-        self.inner.append_to(root)
-
-@dataclass
-class TranslatableRandom(Translatable):
-    """<random><li>output1</li><li>output2</li>...</random>
-    Randomly selects one of the li elements to use as output"""
-    children: Sequence[Translatable]
-    def translate(self, context: ContextLike) -> str:
-        child: Translatable = random.choice(self.children)
-        return child.translate(context)
-    
-    def eval_closure(self, context: ContextLike) -> None:
-        for i, child in enumerate(self.children):
-            child.eval_closure(context)
-            if child.bind_closure():
-                self.children[i] = TranslatableWord(child.translate(context))
-        
-    def append_to(self, tree: ET.Element) -> None:
-        root: ET.Element = ET.SubElement(tree, 'random')
-        for child in self.children:
-            li: ET.Element = ET.SubElement(root, 'li')
-            child.append_to(li)
-
 @dataclass
 class TranslatableEval(Translatable):
     """<eval>expr</eval>
@@ -378,11 +449,6 @@ class TranslatableEval(Translatable):
     def append_to(self, tree: ET.Element) -> None:
         root: ET.Element = ET.SubElement(tree, 'eval')
         self.child.append_to(root)
-
-LearnedCategory: type = Tuple[Iterable[Union[TranslatableWord, TranslatableEval]],\
-    Translatable,\
-    Optional[Iterable[Union[TranslatableWord, TranslatableEval]]],\
-    Optional[Iterable[Union[TranslatableWord, TranslatableEval]]]]
 
 @dataclass
 class TranslatableLearn(Translatable):
@@ -433,43 +499,20 @@ class TranslatableLearn(Translatable):
         template: ET.Element = ET.SubElement(root, 'template')
         self.template_exprs.append_to(template)
 
-@dataclass
-class TranslatableStar(Translatable):
-    """<star | thatstar | topicstar>
-    Replace with matching wildcard text in input"""
-    index: int = 1
-    star_type: str = 'star'
-    def translate(self, context: ContextLike) -> str:
-        return context.get_star(self.index - 1, self.star_type)
-        
-    def append_to(self, tree: ET.Element) -> None:
-        root: ET.Element = ET.SubElement(tree, self.star_type)
-        if self.index != 1:
-            root.attrib['index'] = str(self.index)
+#==========Public facing type alias==========
 
-@dataclass
-class TranslatableRepeat(Translatable):
-    """<request | response | input index="n" />
-    Get the n-th input sentence, full input request, or full response"""
-    repeat_type: str
-    index: int = 1
-    def translate(self, context: ContextLike) -> str:
-        return context.get_repeat(self.index, self.repeat_type)
-        
-    def append_to(self, tree: ET.Element) -> None:
-        root: ET.Element = ET.SubElement(tree, self.repeat_type)
-        if self.index != 1:
-            root.attrib['index'] = str(self.index)
+LearnedCategory: type = Tuple[Iterable[Union[TranslatableWord, TranslatableEval]],\
+    Translatable,\
+    Optional[Iterable[Union[TranslatableWord, TranslatableEval]]],\
+    Optional[Iterable[Union[TranslatableWord, TranslatableEval]]]]
 
-@dataclass
-class TranslatableThat(Translatable):
-    """<that index="m,n" />
-    Substitutes with the n-th to last sentence in the m-th to last response"""
-    response: int = 1
-    sentence: int = 1
-    def translate(self, context: ContextLike) -> str:
-        return context.get_that(self.response, self.sentence)
-        
-    def append_to(self, tree: ET.Element) -> None:
-        root: ET.Element = ET.SubElement(tree, 'that')
-        root.attrib['index'] = f'{self.response},{self.sentence}'
+#==========Internal-use stringop mappings==========
+
+_stringops: Dict[str, Callable[[str], str]] = {
+    'explode': lambda x: ' '.join(list(x)),
+    'uppercase': str.upper,
+    'lowercase': str.lower,
+    'formal': str.title,
+    'sentence': str.capitalize
+}
+

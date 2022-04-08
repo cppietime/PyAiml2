@@ -1,0 +1,20 @@
+{
+    "A test sentence": [
+        "what is a test for", "this one is a test", "this is only for testing", "just to make sure"
+    ],
+    "A real response": [
+        "answer me", "say something", "do not just stay quiet", "I want us to talk", "let us chat",
+        "let us talk", "talk to me", "i want to hear you talking"
+    ],
+    "You are hopeful": [
+        "i really want this to work", "i have a good feeling about this all", "i am putting a lot of work into making this work",
+        "I want this to pay off", "I want this to work well"
+    ],
+    "I will be quiet": [
+        "stop talking", "you talk too much", "be quiet", "keep your voice down",
+        "you are bothering me", "stop bugging me", "you are annoying"
+    ],
+    "A simple pattern": [
+        "you are fun to talk to", "i enjoy talking to you", "i am having a good time"
+    ]
+}

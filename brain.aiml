@@ -1,0 +1,200 @@
+<aiml>
+    <category>
+        <pattern>A simple pattern</pattern>
+        <template>Recognizing a simple pattern<think><set name="topic">test big</set></think></template>
+    </category>
+    <category>
+        <pattern>Before * after</pattern>
+        <template>You said "<star />" when you said "<request />"</template>
+    </category>
+    <category>
+        <pattern>What did you say?</pattern>
+        <template>I said "<that />"</template>
+    </category>
+    <category>
+        <pattern>you did not *</pattern>
+        <that>I said *</that>
+        <template><star /> and <thatstar /></template>
+    </category>
+    <category>
+        <pattern>Inner topic</pattern>
+        <topic>test *</topic>
+        <template>Yes to the inner <topicstar /></template>
+    </category>
+    <topic name="test *">
+        <category>
+            <pattern>Outer topic</pattern>
+            <template>Yes to the bigboy <topicstar /></template>
+        </category>
+    </topic>
+    <category>
+        <pattern>redirect for *</pattern>
+        <template>I will fetch <sr /></template>
+    </category>
+    <category>
+        <pattern>what is my topic?</pattern>
+        <template>The topic is <get><name>topic</name></get></template>
+    </category>
+    <category>
+        <pattern>learn anything</pattern>
+        <template>Now I know something!!!
+        <learn>
+            <category>
+            <pattern>did you learn</pattern>
+            <template>I learned</template>
+            </category>
+        </learn>
+        </template>
+    </category>
+    <category>
+        <pattern>learn that * is *</pattern>
+        <template>Now I know that <star index="1" /> is <star index="2" />
+        <learn>
+            <category>
+            <pattern>is <eval><star index="1" /> <star index="2" /></eval> in *</pattern>
+            <template><eval><star index="1" /> is <star index="2" /></eval> even not in <star /></template>
+            </category>
+        </learn>
+        </template>
+    </category>
+    <category>
+        <pattern>What is the time</pattern>
+        <template><date locale="en_US" timezone="-5"><format>%yy %HH %MM</format></date></template>
+    </category>
+    <category>
+        <pattern>is <set name="integers" /> an integer</pattern>
+        <template>Yes</template>
+    </category>
+    <category>
+        <pattern>What is the * of *</pattern>
+        <template><srai>XMAPTEST <map><name><star index="1" /></name><star index="2" /></map></srai></template>
+    </category>
+    <category>
+        <pattern>XMAPTEST *</pattern>
+        <template>It is <star/></template>
+    </category>
+    <category>
+        <pattern>XMAPTEST</pattern>
+        <template>There is no good answer</template>
+    </category>
+    <category>
+        <pattern>Set * to *</pattern>
+        <template><star /> set to <set><name><star /></name><star index="2" /></set></template>
+    </category>
+    <category>
+        <pattern>Get *</pattern>
+        <template><star /> is <get><name><star /></name></get></template>
+    </category>
+    <category>
+        <pattern>One condition on *</pattern>
+        <template>First part
+        <condition><name><star/></name><value>true</value><star/> is true</condition></template>
+    </category>
+    <category>
+        <pattern>Switch condition on *</pattern>
+        <template>First part=
+        <condition><name><star/></name>
+            <li value="one">1</li>
+            <li value="two">2</li>
+            <li><value><star/></value>its own name</li>
+            <li>None of the above</li>
+        </condition></template>
+    </category>
+    <category>
+        <pattern>Compound condition on * and *</pattern>
+        <template>First part=<condition>
+            <li value="one"><name><star/></name>First var is one</li>
+            <li><value>two</value><name><star index="2"/></name>Second var is two</li>
+            <li><value><get><name><star index="2"/></name></get></value><name><star/></name>Both are equal</li>
+            <li>None of the above</li>
+        </condition></template>
+    </category>
+    <category>
+        <pattern>Random response with *</pattern>
+        <template><random>
+            <li>Response one <star /></li>
+            <li>Response two <star /></li>
+            <li>Response three <star /></li>
+        </random></template>
+    </category>
+    <category>
+        <pattern>Learn integers</pattern>
+        <template>Go ahead and test<learn>
+            <category>
+                <pattern>Test integer on <set><name>integers</name></set></pattern>
+                <template><star /> is an integer</template>
+            </category>
+        </learn><learn>
+            <category>
+                <pattern>Test% integer% on <set><name>integers</name></set></pattern>
+                <template><star />.. is.. an.. integer</template>
+            </category>
+        </learn></template>
+    </category>
+    <category>
+        <pattern>call punc *</pattern>
+        <template><srai>test% integer% on <star /></srai></template>
+    </category>
+    <category>
+        <pattern>Test escapes outer</pattern>
+        <template>100 &gt; 90<srai>inner escape &lt;</srai></template>
+    </category>
+    <category>
+        <pattern>inner escape &lt;</pattern>
+        <template>Inner escape!</template>
+    </category>
+    <category>
+        <pattern>Test loop for <set name="integers"/></pattern>
+        <template><think>
+            <set name="intval"><star/></set>
+        </think><condition name="intval">
+            <li value="0">End condition</li>
+            <li>Looping <get name="intval"/>...<think>
+                <set name="intval"><map name="predecessor"><get name="intval"/></map></set>
+            </think><loop/></li>
+        </condition></template>
+    </category>
+    <category>
+        <pattern>is * even</pattern>
+        <template><think>
+            <set name="modulus"><map name="python"><star/> % 2</map></set>
+        </think><condition name="modulus">
+            <li value="0">Yes, <star /> is even!</li>
+            <li>No! <star /> is odd.</li>
+        </condition></template>
+    </category>
+    <category>
+        <pattern>What is the value of *</pattern>
+        <template><star /> evaluates to <get><name><star /></name></get></template>
+    </category>
+    <category>
+        <pattern>What is the bot value of *</pattern>
+        <template><star /> evaluates to <bot><name><star /></name></bot></template>
+    </category>
+    <category>
+        <pattern>Substitute *</pattern>
+        <template><person><star /></person></template>
+    </category>
+    <category>
+        <pattern>Go back</pattern>
+        <template><response index="2" /></template>
+    </category>
+    <category>
+        <pattern>Go back more</pattern>
+        <template><response index="6" /></template>
+    </category>
+    <category>
+        <pattern>Infinity</pattern>
+        <template>Going <srai>Infinity</srai></template>
+    </category>
+    <category>
+        <pattern>Forget everything</pattern>
+        <template>Okay<unlearn/></template>
+    </category>
+    <category>
+        <pattern>Unset *</pattern>
+        <template>Unsetting <star/><think>
+            <set><name><star/></name></set>
+        </think></template>
+    </category>
+</aiml>

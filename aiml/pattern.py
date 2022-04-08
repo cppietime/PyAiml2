@@ -46,12 +46,12 @@ class PatternToken(object):
     wildcard_type: WildcardType = WildcardType.LITERAL
     
     def __hash__(self) -> int:
-        return hash(self.wildcard_type.value * 257 + hash(self.literal_value))
+        return hash(self.wildcard_type.value * 257 + hash((self.literal_value or '').lower()))
     
     def __eq__(self, other: 'PatternToken') -> bool:
         return self.wildcard_type == other.wildcard_type and\
-            self.literal_value.lower().strip(string.punctuation) ==\
-            other.literal_value.lower().strip(string.punctuation)
+            self.literal_value.lower() ==\
+            other.literal_value.lower()
 
 class PatternTokens(object):
     """

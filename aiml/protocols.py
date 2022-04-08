@@ -1,6 +1,9 @@
 """
-aiml/protocols.py
+aiml/aiml/protocols.py
 c Yaakov Schectman 2022
+
+Used for duck-typing for type hinting to make it clear what methods are available for
+certian types not yet declared
 """
 from typing import (
     List,
@@ -51,4 +54,7 @@ class ContextLike(Protocol):
             that: Optional[Iterable[str]] = None,\
             topic: Optional[Iterable[str]] = None,\
             learned: bool = False) -> None:
+        raise NotImplementedError()
+    
+    def unlearn(self) -> None:
         raise NotImplementedError()

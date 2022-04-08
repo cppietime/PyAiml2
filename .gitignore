@@ -1,2 +1,7 @@
 __pycache__/
 scratch/
+PyAiml2.egg-info/
+build/
+**/__pycache__/
+vars.json
+learn.aiml
